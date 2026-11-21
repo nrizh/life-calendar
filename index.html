@@ -2,8 +2,13 @@
 <html lang="ru" data-theme="sand">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="description" content="Календарь жизни: выбранный горизонт в неделях. Прожитое закрашено, текущая неделя выделена, будущее ещё пусто.">
+  <meta name="theme-color" content="#f3eee4">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Календарь">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Календарь жизни</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,7 +19,18 @@
       if (raw) {
         var data = JSON.parse(raw);
         var allowed = { sand: 1, ink: 1, dusk: 1, moss: 1, ember: 1 };
-        if (data && allowed[data.theme]) document.documentElement.setAttribute("data-theme", data.theme);
+        if (data && allowed[data.theme]) {
+          document.documentElement.setAttribute("data-theme", data.theme);
+          var dark = data.theme === "dusk" || data.theme === "ember";
+          var color = dark ? "#14131a" : "#f3eee4";
+          if (data.theme === "ink") color = "#f3f1eb";
+          if (data.theme === "moss") color = "#eef2e8";
+          if (data.theme === "ember") color = "#141211";
+          var themeMeta = document.querySelector('meta[name="theme-color"]');
+          var bar = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+          if (themeMeta) themeMeta.setAttribute("content", color);
+          if (bar) bar.setAttribute("content", dark ? "black" : "default");
+        }
       }
     } catch (e) {}
   </script>
@@ -60,7 +76,7 @@
       --shadow: 0 30px 80px rgba(0, 0, 0, 0.5); --glow: rgba(212, 146, 100, 0.18); --glass: rgba(246, 239, 230, 0.5);
     }
     * { box-sizing: border-box; }
-    html, body { min-height: 100%; overflow-x: clip; }
+    html, body { min-height: 100%; }
     body {
       margin: 0;
       background: var(--paper);
@@ -135,19 +151,35 @@
     .dots { display: flex; }
     .dots i { width: 0.85rem; height: 0.85rem; border-radius: 99px; display: block; margin-left: -0.25rem; border: 1px solid var(--paper); }
     .dots i:first-child { margin-left: 0; }
-    .layout { display: grid; gap: 1.25rem; min-width: 0; }
-    .layout > * { min-width: 0; }
+    .layout { display: grid; gap: 1.25rem; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+    .layout > * { min-width: 0; max-width: 100%; }
     @media (min-width: 960px) {
-      .layout { grid-template-columns: 280px 1fr; align-items: start; }
+      .layout { grid-template-columns: 280px minmax(0, 1fr); align-items: start; }
       .aside { position: sticky; top: 1rem; }
     }
     .top { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-end; margin-bottom: 1rem; }
-    .week-grid { --cell: 0.78rem; --gap: 2px; }
+    .life-canvas { display: none; width: 100%; touch-action: manipulation; }
+    .week-grid { --cell: 0.78rem; --gap: 2px; width: 100%; max-width: 100%; min-width: 0; }
+    .week-grid.is-phone .life-canvas { display: block; }
+    .week-grid.is-phone .ruler,
+    .week-grid.is-phone #calendar { display: none; }
+    .week-grid.is-phone .grid-scroll {
+      overflow: visible; max-height: none; border: none; background: transparent; padding: 0;
+    }
     .week-grid[data-density="decade"] { --cell: 1.28rem; }
     .grid-scroll {
+      position: relative; width: 100%; max-width: 100%; min-width: 0;
       overflow: auto; max-height: min(70vh, 760px); padding: 0.35rem 0.2rem 0.8rem;
       border-radius: 1.25rem; border: 1px solid var(--line);
       background: color-mix(in srgb, var(--paper-raised) 65%, transparent);
+      overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+    }
+    @media (max-width: 899px) {
+      .grid-scroll { max-height: none; overflow-x: auto; overflow-y: hidden; }
+      .week-grid { --cell: 0.55rem; }
+      .week-grid[data-density="decade"] { --cell: 0.7rem; }
+      .btn.small { padding: 0.38rem 0.7rem; }
+      .wrap { padding-bottom: calc(2rem + env(safe-area-inset-bottom)); }
     }
     .ruler, .week-row {
       display: grid;
@@ -212,6 +244,10 @@
     @media (hover: hover) and (pointer: fine) {
       .week-cell:hover { z-index: 2; transform: scale(1.28); }
     }
+    @media (hover: none), (pointer: coarse) {
+      .grain, button.week-cell.is-current { animation: none; }
+      .week-cell:hover { transform: none; }
+    }
     @media (prefers-reduced-motion: reduce) {
       .grain, .week-cell.is-current { animation: none; }
       .week-cell:hover { transform: none; }
@@ -272,6 +308,17 @@
     var contemplation = false;
     var selected = null;
     var saveWarning = "";
+    var gridState = {
+      years: [],
+      birth: null,
+      currentIndex: -1,
+      rowH: 16,
+      stageH: 34,
+      measured: [],
+      start: -1,
+      end: -1,
+      ticking: false
+    };
 
     function esc(value) {
       return String(value).replace(/[&<>"']/g, function (char) {
@@ -635,38 +682,247 @@
     }
 
     function gridHtml(model) {
-      var birth = model.birth;
       var years = visibleYears(model);
-      var rows = ['<div class="ruler" aria-hidden="true"><span></span><span style="grid-column:2">1</span><span style="grid-column:14">13</span><span style="grid-column:27">26</span><span style="grid-column:40">39</span><span style="grid-column:53">52</span></div><div id="calendar" role="grid" aria-label="Недели жизни">'];
-      years.forEach(function (year, position) {
+      gridState.years = years;
+      gridState.birth = model.birth;
+      gridState.currentIndex = model.currentIndex;
+      gridState.measured = [];
+      gridState.start = -1;
+      gridState.end = -1;
+      gridState.rowH = window.innerWidth < 900 ? 14 : 16;
+      return '<div class="week-grid' + (phoneLayout() && profile.view === "life" ? " is-phone" : "") + '" data-density="' + (profile.view === "decade" ? "decade" : "life") + '"><div class="grid-scroll" id="grid-scroll"><canvas id="life-canvas" class="life-canvas" aria-label="Недели жизни"></canvas><div class="ruler" aria-hidden="true"><span></span><span style="grid-column:2">1</span><span style="grid-column:14">13</span><span style="grid-column:27">26</span><span style="grid-column:40">39</span><span style="grid-column:53">52</span></div><div id="calendar" role="grid" aria-label="Недели жизни"><div id="grid-pad-top"></div><div id="grid-rows"></div><div id="grid-pad-bottom"></div></div></div><p class="soft quiet">Строка — год жизни, клетка — неделя. Стрелки двигают фокус. Горизонт — ' + esc(yearsLabel(model.horizonYears)) + ", " + esc(weeksLabel(model.horizonWeeks)) + ".</p></div>";
+    }
+
+    function phoneLayout() {
+      return window.innerWidth < 900;
+    }
+
+    function canvasMode() {
+      return phoneLayout() && profile && profile.view === "life";
+    }
+
+    function blockEstimate(index) {
+      if (gridState.measured[index]) return gridState.measured[index];
+      var extra = 0;
+      if (profile.showStages) {
+        var stage = stageForYear(gridState.years[index]);
+        var prev = index === 0 ? null : stageForYear(gridState.years[index - 1]);
+        if (!prev || prev.id !== stage.id) extra = gridState.stageH;
+      }
+      return gridState.rowH + extra;
+    }
+
+    function offsetOf(index) {
+      var sum = 0;
+      for (var i = 0; i < index; i += 1) sum += blockEstimate(i);
+      return sum;
+    }
+
+    function drawLife() {
+      var canvas = document.getElementById("life-canvas");
+      if (!canvas || !gridState.years.length) return;
+      var styles = getComputedStyle(document.documentElement);
+      var sand = styles.getPropertyValue("--sand").trim();
+      var current = styles.getPropertyValue("--current").trim();
+      var inkSoft = styles.getPropertyValue("--ink-soft").trim();
+      var paper = styles.getPropertyValue("--paper").trim();
+      var future = styles.getPropertyValue("--future").trim();
+      var noteDot = styles.getPropertyValue("--note-dot").trim();
+      var width = canvas.parentElement.clientWidth || 320;
+      var labelW = 32;
+      var rowH = 11;
+      var stageH = 22;
+      var years = gridState.years;
+      var marks = [];
+      var cursor = 0;
+      for (var i = 0; i < years.length; i += 1) {
+        var year = years[i];
+        var stageLabel = "";
+        if (profile.showStages) {
+          var stage = stageForYear(year);
+          var prev = i === 0 ? null : stageForYear(years[i - 1]);
+          if (!prev || prev.id !== stage.id) {
+            stageLabel = stage.label;
+            cursor += stageH;
+          }
+        }
+        marks.push({ year: year, y: cursor, h: rowH, stage: stageLabel, stageY: stageLabel ? cursor - stageH : 0 });
+        cursor += rowH;
+      }
+      gridState.marks = marks;
+      gridState.labelW = labelW;
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.style.width = "100%";
+      canvas.style.height = cursor + "px";
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(cursor * dpr);
+      var ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, cursor);
+      var cell = (width - labelW) / 52;
+      gridState.cell = cell;
+      for (var m = 0; m < marks.length; m += 1) {
+        var mark = marks[m];
+        if (mark.stage) {
+          ctx.fillStyle = inkSoft;
+          ctx.font = "italic 16px Georgia, serif";
+          ctx.textAlign = "left";
+          ctx.fillText(mark.stage, 0, mark.stageY + 16);
+        }
+        ctx.fillStyle = inkSoft;
+        ctx.font = "10px sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(String(mark.year), labelW - 4, mark.y + rowH - 2);
+        for (var week = 0; week < 52; week += 1) {
+          var index = mark.year * 52 + week;
+          var state = stateOf(index, gridState.currentIndex);
+          var noted = !!profile.notes[mark.year + "-" + week];
+          var x = labelW + week * cell;
+          ctx.globalAlpha = dimEmpty && !noted && state !== "current" ? 0.18 : 1;
+          if (state === "future") {
+            ctx.strokeStyle = future;
+            ctx.strokeRect(x + 0.5, mark.y + 1, Math.max(1, cell - 1.5), rowH - 3);
+          } else {
+            ctx.fillStyle = state === "current" ? current : sand;
+            ctx.fillRect(x, mark.y + 1, Math.max(1, cell - 1.5), rowH - 3);
+          }
+          if (noted) {
+            ctx.fillStyle = state === "future" ? noteDot : paper;
+            ctx.beginPath();
+            ctx.arc(x + Math.max(1, cell - 1.5) / 2, mark.y + rowH / 2, 1.15, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+        }
+      }
+      if (!canvas.dataset.bound) {
+        canvas.dataset.bound = "1";
+        canvas.addEventListener("click", function (event) {
+          var rect = canvas.getBoundingClientRect();
+          var x = event.clientX - rect.left;
+          var py = event.clientY - rect.top;
+          var week = Math.floor((x - gridState.labelW) / gridState.cell);
+          if (week < 0 || week > 51) return;
+          var list = gridState.marks || [];
+          for (var n = 0; n < list.length; n += 1) {
+            if (py >= list[n].y && py < list[n].y + list[n].h) {
+              openWeek(list[n].year, week);
+              return;
+            }
+          }
+        });
+      }
+    }
+
+    function yearBlockHtml(position) {
+      var year = gridState.years[position];
+      var birth = gridState.birth;
+      var currentIndex = gridState.currentIndex;
+      var parts = ["<div class=\"year-block\">"];
+      if (profile.showStages) {
         var stage = stageForYear(year);
-        var previous = position === 0 ? null : stageForYear(years[position - 1]);
-        if (profile.showStages && (!previous || previous.id !== stage.id)) {
-          rows.push('<div class="stage-label">' + esc(stage.label) + '</div>');
+        var prev = position === 0 ? null : stageForYear(gridState.years[position - 1]);
+        if (!prev || prev.id !== stage.id) parts.push('<div class="stage-label">' + esc(stage.label) + "</div>");
+      }
+      var currentYear = currentIndex >= 0 && Math.floor(currentIndex / WEEKS) === year;
+      parts.push('<div role="row" class="week-row' + (currentYear ? " is-now" : "") + '"><div class="year-label' + (year % 10 === 0 ? " is-decade" : "") + '">' + year + "</div>");
+      for (var week = 0; week < WEEKS; week += 1) {
+        var index = year * WEEKS + week;
+        var state = stateOf(index, currentIndex);
+        var noted = !!profile.notes[year + "-" + week];
+        var range = weekRange(birth, index);
+        parts.push('<button type="button" role="gridcell" id="week-' + year + "-" + week + '" class="week-cell is-' + state + (noted ? " has-note" : "") + (dimEmpty && !noted && state !== "current" ? " is-dim" : "") + (selected === index ? " is-selected" : "") + '" data-year="' + year + '" data-week="' + week + '" aria-label="' + year + ", неделя " + (week + 1) + ", " + stateLabel(state) + '"' + (state === "current" ? ' aria-current="date"' : "") + ' title="' + formatShort(range.start) + "–" + formatShort(range.end) + '"></button>');
+      }
+      parts.push("</div></div>");
+      return parts.join("");
+    }
+
+    function syncGrid() {
+      if (canvasMode()) return;
+      var host = document.getElementById("grid-rows");
+      var years = gridState.years;
+      if (!host || !years.length) return;
+      var total = years.length;
+      var start = 0;
+      var end = total;
+      if (total > 16) {
+        var cal = document.getElementById("calendar");
+        var viewStart = 0;
+        var viewSize = 700;
+        if (phoneLayout()) {
+          viewStart = Math.max(0, -cal.getBoundingClientRect().top);
+          viewSize = window.innerHeight;
+        } else {
+          var scroller = document.getElementById("grid-scroll");
+          viewStart = Math.max(0, scroller.scrollTop - cal.offsetTop);
+          viewSize = scroller.clientHeight || 640;
         }
-        var currentYear = model.currentIndex >= 0 && Math.floor(model.currentIndex / WEEKS) === year;
-        var cells = ['<div role="row" class="week-row' + (currentYear ? ' is-now' : '') + '"><div class="year-label' + (year % 10 === 0 ? ' is-decade' : '') + '">' + year + '</div>'];
-        for (var week = 0; week < WEEKS; week += 1) {
-          var index = year * WEEKS + week;
-          var state = stateOf(index, model.currentIndex);
-          var note = profile.notes[year + "-" + week];
-          var range = weekRange(birth, index);
-          var dim = dimEmpty && !note && state !== "current" ? " is-dim" : "";
-          var selectedClass = selected === index ? " is-selected" : "";
-          var label = "Возраст " + year + ", неделя " + (week + 1) + ". " + formatShort(range.start) + "–" + formatShort(range.end) + ". " + stateLabel(state) + (note ? ". Есть заметка" : "");
-          cells.push('<button type="button" role="gridcell" id="week-' + year + '-' + week + '" class="week-cell is-' + state + (note ? ' has-note' : '') + dim + selectedClass + '" data-year="' + year + '" data-week="' + week + '" aria-label="' + esc(label) + '"' + (state === "current" ? ' aria-current="date"' : '') + ' title="' + esc(formatShort(range.start) + "–" + formatShort(range.end)) + '"></button>');
+        var cursor = 0;
+        while (start < total && cursor + blockEstimate(start) < viewStart - gridState.rowH * 5) {
+          cursor += blockEstimate(start);
+          start += 1;
         }
-        cells.push("</div>");
-        rows.push(cells.join(""));
+        end = start;
+        var limit = viewStart + viewSize + gridState.rowH * 8;
+        var walked = cursor;
+        while (end < total && walked < limit) {
+          walked += blockEstimate(end);
+          end += 1;
+        }
+      }
+      if (start !== gridState.start || end !== gridState.end) {
+        var html = [];
+        for (var i = start; i < end; i += 1) html.push(yearBlockHtml(i));
+        host.innerHTML = html.join("");
+        gridState.start = start;
+        gridState.end = end;
+      }
+      var blocks = host.children;
+      for (var b = 0; b < blocks.length; b += 1) {
+        var height = blocks[b].getBoundingClientRect().height;
+        if (height > 0) gridState.measured[start + b] = height;
+      }
+      var padTop = document.getElementById("grid-pad-top");
+      var padBottom = document.getElementById("grid-pad-bottom");
+      if (padTop) padTop.style.height = offsetOf(start) + "px";
+      if (padBottom) padBottom.style.height = Math.max(0, offsetOf(total) - offsetOf(end)) + "px";
+    }
+
+    function scheduleGrid() {
+      if (canvasMode()) return;
+      if (gridState.ticking) return;
+      gridState.ticking = true;
+      requestAnimationFrame(function () {
+        gridState.ticking = false;
+        syncGrid();
       });
-      rows.push("</div>");
-      return '<div class="week-grid" data-density="' + (profile.view === "decade" ? "decade" : "life") + '"><div class="grid-scroll">' + rows.join("") + '</div><p class="soft quiet">Строка — год жизни, клетка — неделя. Стрелки двигают фокус. Горизонт — ' + esc(yearsLabel(model.horizonYears)) + ', ' + esc(weeksLabel(model.horizonWeeks)) + '.</p></div>';
+    }
+
+    function revealYear(year) {
+      if (canvasMode()) {
+        var canvas = document.getElementById("life-canvas");
+        var list = gridState.marks || [];
+        var mark = null;
+        for (var i = 0; i < list.length; i += 1) if (list[i].year === year) mark = list[i];
+        if (canvas && mark) window.scrollTo(0, Math.max(0, canvas.getBoundingClientRect().top + window.scrollY + mark.y - 72));
+        return;
+      }
+      var index = gridState.years.indexOf(year);
+      var cal = document.getElementById("calendar");
+      if (index < 0 || !cal) return;
+      var y = offsetOf(index);
+      if (phoneLayout()) window.scrollTo(0, Math.max(0, cal.getBoundingClientRect().top + window.scrollY + y - 72));
+      else {
+        var scroller = document.getElementById("grid-scroll");
+        if (scroller) scroller.scrollTop = cal.offsetTop + Math.max(0, y - 24);
+      }
+      syncGrid();
     }
 
     function renderCalendar(reveal) {
       var model = modelOf(profile);
       var scroller = document.querySelector(".grid-scroll");
-      var memory = !reveal && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
+      var memory = !reveal && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft, win: window.scrollY } : null;
       var name = profile.name || "Календарь жизни";
       var maxDecade = Math.max(0, Math.floor((model.displayYears - 1) / 10) * 10);
       var decadeEnd = Math.min(model.displayYears - 1, decadeStart + 9);
@@ -681,12 +937,21 @@
       }
       var currentNote = currentKey && profile.notes[currentKey] ? profile.notes[currentKey].text : "";
       app.dataset.contemplation = contemplation ? "true" : "false";
-      app.innerHTML = '<header class="top chrome"><div><p class="kicker">Недели жизни</p><h1 id="calendar-title">' + esc(name) + '</h1></div><div class="row"><button type="button" class="btn small line" data-action="journal">Журнал</button><button type="button" class="btn small line" data-action="settings">Настройки</button></div></header><div class="contemplation-only"><p class="quote">«' + QUOTE + '»</p><button type="button" class="btn small line" data-action="contemplation-off">Вернуться</button></div><div class="layout"><aside class="aside panel"><div>' + hourglass(model.pastRatio, model.futureRatio, model.futureWeeks > 0) + '</div>' + statsHtml(model) + '<p class="soft">' + esc(remainingPhrase(model.futureWeeks)) + '</p>' + (model.extended ? '<p class="soft">Сетка длиннее горизонта: уже прожитые годы остаются на месте.</p>' : '') + '<p class="quote" style="font-size:1.35rem">«' + QUOTE + '»</p>' + (currentNote ? '<p class="soft">' + esc(currentNote) + '</p>' : '<p class="faint">У текущей недели пока нет записи.</p>') + (saveWarning ? '<p class="error">' + esc(saveWarning) + '</p>' : '') + '</aside><section><div class="row chrome" style="margin-bottom:0.7rem"><button type="button" class="btn small line" data-action="view" data-view="life" aria-pressed="' + (profile.view === "life") + '">Вся жизнь</button><button type="button" class="btn small line" data-action="view" data-view="decade" aria-pressed="' + (profile.view === "decade") + '">Десятилетие</button>' + decadeNav + '<button type="button" class="btn small line" data-action="current">К этой неделе</button><button type="button" class="btn small ghost" data-action="stages" aria-pressed="' + profile.showStages + '">Этапы</button><button type="button" class="btn small ghost" data-action="dim" aria-pressed="' + dimEmpty + '">Только заметки</button><button type="button" class="btn small ghost" data-action="contemplation-on">Созерцание</button></div>' + gridHtml(model) + '</section></div>';
-      var next = document.querySelector(".grid-scroll");
-      if (reveal) scrollToCurrent();
-      else if (memory && next) {
-        next.scrollTop = memory.top;
-        next.scrollLeft = memory.left;
+      app.innerHTML = '<header class="top chrome"><div><p class="kicker">Недели жизни</p><h1 id="calendar-title">' + esc(name) + '</h1></div><div class="row"><button type="button" class="btn small line" data-action="journal">Журнал</button><button type="button" class="btn small line" data-action="settings">Настройки</button></div></header><div class="contemplation-only"><p class="quote">«' + QUOTE + '»</p><button type="button" class="btn small line" data-action="contemplation-off">Вернуться</button></div><div class="layout"><aside class="aside panel"><div>' + hourglass(model.pastRatio, model.futureRatio, model.futureWeeks > 0) + '</div>' + statsHtml(model) + '<p class="soft">' + esc(remainingPhrase(model.futureWeeks)) + '</p>' + (model.extended ? '<p class="soft">Сетка длиннее горизонта: уже прожитые годы остаются на месте.</p>' : '') + '<p class="quote" style="font-size:1.35rem">«' + QUOTE + '»</p>' + (currentNote ? '<p class="soft">' + esc(currentNote) + '</p>' : '<p class="faint">У текущей недели пока нет записи.</p>') + (saveWarning ? '<p class="error">' + esc(saveWarning) + '</p>' : '') + '</aside><section><div class="row toolbar chrome" style="margin-bottom:0.7rem"><button type="button" class="btn small line" data-action="view" data-view="life" aria-pressed="' + (profile.view === "life") + '">Вся жизнь</button><button type="button" class="btn small line" data-action="view" data-view="decade" aria-pressed="' + (profile.view === "decade") + '">Десятилетие</button>' + decadeNav + '<button type="button" class="btn small line" data-action="current">К этой неделе</button><button type="button" class="btn small ghost" data-action="stages" aria-pressed="' + profile.showStages + '">Этапы</button><button type="button" class="btn small ghost" data-action="dim" aria-pressed="' + dimEmpty + '">Только заметки</button><button type="button" class="btn small ghost" data-action="contemplation-on">Созерцание</button></div>' + gridHtml(model) + '</section></div>';
+      var next = document.getElementById("grid-scroll");
+      if (next) next.addEventListener("scroll", scheduleGrid, { passive: true });
+      if (canvasMode()) {
+        drawLife();
+        if (reveal) scrollToCurrent();
+        else if (memory) window.scrollTo(0, memory.win || 0);
+      } else if (reveal) scrollToCurrent();
+      else {
+        if (memory && next) {
+          next.scrollTop = memory.top;
+          next.scrollLeft = memory.left;
+        }
+        if (memory) window.scrollTo(0, memory.win || 0);
+        syncGrid();
       }
     }
 
@@ -695,16 +960,23 @@
       if (!cell || !scroller) return;
       var cellBox = cell.getBoundingClientRect();
       var box = scroller.getBoundingClientRect();
-      if (cellBox.top < box.top || cellBox.bottom > box.bottom) {
-        scroller.scrollTop += cellBox.top - box.top - (box.height - cellBox.height) / 2;
-      }
       if (cellBox.left < box.left || cellBox.right > box.right) {
         scroller.scrollLeft += cellBox.left - box.left - (box.width - cellBox.width) / 2;
+      }
+      if (!phoneLayout() && (cellBox.top < box.top || cellBox.bottom > box.bottom)) {
+        scroller.scrollTop += cellBox.top - box.top - (box.height - cellBox.height) / 2;
+        syncGrid();
       }
     }
 
     function scrollToCurrent() {
-      scrollCell(document.querySelector(".week-cell.is-current"));
+      var model = modelOf(profile);
+      if (model.currentIndex < 0) {
+        if (!canvasMode()) syncGrid();
+        return;
+      }
+      revealYear(Math.floor(model.currentIndex / WEEKS));
+      if (!canvasMode()) scrollCell(document.querySelector(".week-cell.is-current"));
     }
 
     function finishDialog() {
@@ -872,8 +1144,8 @@
       closeDialog();
       if (profile.view === "decade") decadeStart = Math.floor(year / 10) * 10;
       renderCalendar(false);
-      var cell = document.getElementById("week-" + year + "-" + week);
-      scrollCell(cell);
+      revealYear(year);
+      scrollCell(document.getElementById("week-" + year + "-" + week));
       openWeek(year, week);
     }
 
@@ -1041,10 +1313,30 @@
       else return;
       if (week > 51) { week = 0; year += 1; }
       else if (week < 0) { week = 51; year -= 1; }
-      var next = document.getElementById("week-" + year + "-" + week);
-      if (!next) return;
+      var nextCell = document.getElementById("week-" + year + "-" + week);
+      if (!nextCell) {
+        revealYear(year);
+        nextCell = document.getElementById("week-" + year + "-" + week);
+      }
+      if (!nextCell) return;
       event.preventDefault();
-      next.focus();
+      nextCell.focus();
+    });
+
+    window.addEventListener("scroll", scheduleGrid, { passive: true });
+    window.addEventListener("resize", function () {
+      if (canvasMode()) {
+        var grid = document.querySelector(".week-grid");
+        if (grid) grid.classList.add("is-phone");
+        drawLife();
+        return;
+      }
+      var grid = document.querySelector(".week-grid");
+      if (grid) grid.classList.remove("is-phone");
+      gridState.measured = [];
+      gridState.start = -1;
+      gridState.end = -1;
+      scheduleGrid();
     });
 
     if (profile) {
